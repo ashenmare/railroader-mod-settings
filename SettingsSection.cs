@@ -1,10 +1,11 @@
-// SettingsSection.cs (Revision 8)
+// SettingsSection.cs (Revision 9)
 // A settings editor for a Railroader mod, shown in Preferences > Mods (from the main menu and in game). Every mod that
 // carries this file shares one Mods tab.
 //
 // USE
 //   1. Copy this file into your mod. Change only the namespace line.
-//   2. Make a SettingsSection with your fields (SettingField.Bool, Int, Float, Choice) and your settings.json path.
+//   2. Make a SettingsSection with your fields (SettingField.Bool, Int, Float, Choice, IntSlider, FloatSlider) and your
+//      settings.json path. A slider field is a number field drawn as a slider: same key, same saved value.
 //   3. Load: PreferencesModsTab.Add(harmony, b => section.Build(b, true), log). Unload: PreferencesModsTab.Remove().
 //   4. Your mod reads settings.json itself at load. `applied` gets the saved file (a JObject) when the player saves.
 //
@@ -18,8 +19,19 @@
 //   - The tab's Harmony patch is applied by hand, never by attribute, so your own PatchAll can't sweep it in.
 //
 // BEHAVIOR
-//   - Rows: a toggle, a dropdown, or - number + held between min and max. The default shows dimmed, help is in the
-//     tooltip, and fields the mod reads only at load are tagged "after restart".
+//   - Rows: a toggle, a dropdown, a slider, or - number + held between min and max. The default shows dimmed beside a
+//     toggle, dropdown or number (a slider's is in its tooltip), help is in the tooltip, and fields the mod reads only
+//     at load are tagged "after restart".
+//   - A slider has an optional text at each end ("Steam", "Diesel"); the handle shows the number, so there is no
+//     separate value text (ValueText is accepted and not drawn). It moves in steps of Step from Min, and the last stop
+//     is Max. Dragging edits the value like typing does; Save, Undo and Reset work the same. The number is not typed on
+//     a slider row. Keep an end text to 14 characters (a longer one is cut with "..."). A FloatSlider shows at least as
+//     many decimals as its step has.
+//   - Every label in a section keeps one size: a long label wraps to a second line (the game's own field label would
+//     shrink it to fit, so long ones would be smaller than the rest) and its row grows to hold both lines, so rows
+//     never overlap. A label that needs a third line shows two lines, with "..." at the end of the second. A single
+//     word wider than the label (about 17 capitals) can't wrap: keep words short. The label's full text is in the
+//     row's tooltip.
 //   - Choices are saved as their text. Text that matches no option (ignoring case and outer spaces) falls back to the
 //     default for that one setting.
 //   - Numbers: "1,000" and "1 000" are a thousand; "12,5" is 12.5 where decimals are allowed. Input that reads two ways
@@ -60,12 +72,16 @@ namespace SETTINGS_NAMESPACE
         internal readonly int Decimals;
         internal readonly bool Live;   // true: the mod reads it each time it's used, so a save takes effect at once
         internal readonly string[] Options;   // Choice only: the texts written to the file, in dropdown order
+        internal readonly bool Slider;        // Int or Float drawn as a slider (same key and saved value as without)
+        internal readonly string LeftLabel, RightLabel, ValueText;   // slider only: the end texts; ValueText is kept, not drawn
 
         private SettingField(string key, string label, SettingKind kind, double def, double min, double max, double step,
-                             int decimals, bool live, string help, string[] options = null)
+                             int decimals, bool live, string help, string[] options = null, bool slider = false,
+                             string left = null, string right = null, string valueText = null)
         {
             Key = key; Label = label; Kind = kind; Default = def; Min = min; Max = max; Step = step;
             Decimals = decimals; Live = live; Help = help; Options = options;
+            Slider = slider; LeftLabel = left; RightLabel = right; ValueText = valueText;
         }
 
         internal static SettingField Bool(string key, string label, bool def, bool live, string help) =>
@@ -77,6 +93,26 @@ namespace SETTINGS_NAMESPACE
         internal static SettingField Float(string key, string label, double def, double min, double max, double step,
                                            int decimals, bool live, string help) =>
             new SettingField(key, label, SettingKind.Float, def, min, max, step > 0 ? step : 1, Math.Max(0, decimals), live, help);
+
+        // An Int drawn as a slider: left and right are the texts at the two ends (either may be null), valueText the
+        // value's text with {0} for the number ("{0}% steam"; null shows the number alone). Saved like Int.
+        internal static SettingField IntSlider(string key, string label, int def, int min, int max, int step, bool live,
+                                               string help, string left, string right, string valueText = null) =>
+            new SettingField(key, label, SettingKind.Int, def, min, max, Math.Max(1, step), 0, live, help, null, true, left, right, valueText);
+
+        // A Float drawn as a slider. Saved like Float (same decimals, but never fewer than its step needs).
+        internal static SettingField FloatSlider(string key, string label, double def, double min, double max, double step,
+                                                 int decimals, bool live, string help, string left, string right, string valueText = null) =>
+            new SettingField(key, label, SettingKind.Float, def, min, max, step > 0 ? step : 1,
+                             Math.Max(Math.Max(0, decimals), PlacesOf(step > 0 ? step : 1)), live, help, null, true, left, right, valueText);
+
+        // The decimals a step needs to show exactly (0.05 needs 2), up to 6. A slider whose step is finer than its
+        // decimals would round two stops to the same shown value, so FloatSlider raises its decimals to this.
+        private static int PlacesOf(double step)
+        {
+            for (int d = 0; d < 6; d++) if (Math.Abs(Math.Round(step, d) - step) < 1e-9) return d;
+            return 6;
+        }
 
         // One of a fixed list of texts, shown as a dropdown. Held as the option's index; the file holds its text.
         internal static SettingField Choice(string key, string label, string[] options, int def, bool live, string help)
@@ -107,7 +143,7 @@ namespace SETTINGS_NAMESPACE
 
     internal sealed class SettingsSection
     {
-        internal const int Revision = 8;
+        internal const int Revision = 9;
 
         private enum FileState { Missing, Read, Unreadable }
 
@@ -183,6 +219,7 @@ namespace SETTINGS_NAMESPACE
                 SettingField f = _fields[k];
                 IConfigurableElement row = f.Kind == SettingKind.Bool ? BoolRow(b, k)
                                          : f.Kind == SettingKind.Choice ? ChoiceRow(b, k)
+                                         : f.Slider ? SliderRow(b, k)
                                          : NumberRow(b, k);
                 row.Tooltip(f.Label, HelpText(f));
             }
@@ -238,7 +275,7 @@ namespace SETTINGS_NAMESPACE
             _statusText = b.AddLabel(Footnote(StatusShown())).GetComponent<TMP_Text>();
         }
 
-        private const string NotApplied = "Saved, but the mod couldn't take the new settings now, so they take effect after a restart. The log says why.";
+        private const string NotApplied = "Saved. Takes effect after a restart; the log says why.";
 
         // What the status line says: the last action, else unsaved edits, else why the mod isn't running what's shown.
         private string StatusShown() => _status != "" ? _status : Dirty ? "Not saved yet." : _behind ?? "";
@@ -268,7 +305,7 @@ namespace SETTINGS_NAMESPACE
         private IConfigurableElement BoolRow(UIPanelBuilder b, int k)
         {
             SettingField f = _fields[k];
-            return b.AddField(f.Label, b.HStack(row =>
+            return Field(b, f, b.HStack(row =>
             {
                 row.AddToggle(() => _values[k] != 0, on => Guard("toggle", () => { _values[k] = on ? 1 : 0; _editNote = null; Edited(""); }));
                 row.Spacer(8f);
@@ -283,7 +320,7 @@ namespace SETTINGS_NAMESPACE
         private IConfigurableElement ChoiceRow(UIPanelBuilder b, int k)
         {
             SettingField f = _fields[k];
-            return b.AddField(f.Label, b.HStack(row =>
+            return Field(b, f, b.HStack(row =>
             {
                 int at = (int)Math.Max(0, Math.Min(f.Options.Length - 1, Math.Round(_values[k])));
                 row.AddDropdown(new List<string>(f.Options), at, i => Guard("choose", () =>
@@ -299,11 +336,109 @@ namespace SETTINGS_NAMESPACE
             }));
         }
 
+        // A field row with the game's own label, kept at one size: the game's field-row Label autosizes from 8 to 12
+        // and never wraps, so a long label would come out smaller than the rest. Here it stays at its largest size and
+        // wraps. The game's row is 30 px (a LayoutElement minHeight on the row, the label a fixed 30 px tall because
+        // the row's layout group does not control child height), which holds one line of 14.6 px but not two lines
+        // with room to spare. A label that wraps makes its row taller: the row and the label go to LabelRowHeight and
+        // the label's text box (the rect less LabelPadBottom, split top and bottom) holds two lines (29.3 px) but not a
+        // third (43.9 px), so a third line's worth of text ends in "..." on the second. The game's label aligns its first
+        // line's capline to the middle (prefab vertical alignment Capline), which leaves a second line hanging below; a
+        // wrapped label is set to Middle so both lines sit centered on the row. The label is measured with the
+        // engine's own text measure at a width a little under the label's 150, so a borderline label gets the tall row.
+        internal const float LabelRowHeight = 44f, LabelPadBottom = 8f, LabelMeasureWidth = 146f, LabelLineHeightPt = 109.71f / 90f;
+
+        // Whether a label of this preferred height (measured at 12 pt) needs more than one line.
+        internal static bool LabelWraps(float preferredHeight, float fontSize) => preferredHeight > fontSize * LabelLineHeightPt * 1.5f;
+
+        private static IConfigurableElement Field(UIPanelBuilder b, SettingField f, RectTransform control)
+        {
+            IConfigurableElement e = b.AddField(f.Label, control);
+            try
+            {
+                Transform t = e.RectTransform.Find("Label");
+                TMP_Text label = t != null ? t.GetComponent<TMP_Text>() : null;
+                if (label != null)
+                {
+                    float size = label.fontSizeMax;
+                    label.enableAutoSizing = false;
+                    label.fontSize = size;
+                    label.textWrappingMode = TextWrappingModes.Normal;
+                    label.overflowMode = TextOverflowModes.Ellipsis;
+                    bool wraps;
+                    // Measured as drawn: the game's label style is all caps (FontStyles.UpperCase), wider
+                    // than the text as typed, so a borderline label measured as typed fits one line and
+                    // then wraps without its tall row.
+                    string drawn = (label.fontStyle & FontStyles.UpperCase) != 0 ? label.text.ToUpperInvariant() : label.text;
+                    try { wraps = LabelWraps(label.GetPreferredValues(drawn, LabelMeasureWidth, 0f).y, size); }
+                    catch (Exception) { wraps = f.Label != null && f.Label.Length > 16; }   // can't measure: be safe, give it room
+                    if (wraps)
+                    {
+                        label.margin = new Vector4(0f, LabelPadBottom / 2f, 0f, LabelPadBottom / 2f);
+                        label.verticalAlignment = VerticalAlignmentOptions.Middle;   // both lines centered
+                        label.rectTransform.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, LabelRowHeight);
+                        // The game's field row lays its parts out from the top (prefab child alignment UpperLeft), so
+                        // in a taller row the control would stay at the top while the two lines sit centered below
+                        // it: center the row's parts so the control sits level with the middle of the two lines.
+                        UnityEngine.UI.LayoutGroup rowLayout = e.RectTransform.GetComponent<UnityEngine.UI.LayoutGroup>();
+                        if (rowLayout != null) rowLayout.childAlignment = TextAnchor.MiddleLeft;
+                        UnityEngine.UI.LayoutElement rowFit = e.RectTransform.GetComponent<UnityEngine.UI.LayoutElement>();
+                        if (rowFit != null) rowFit.minHeight = Math.Max(rowFit.minHeight, LabelRowHeight);
+                    }
+                }
+            }
+            catch (Exception) { }
+            return e;
+        }
+
+        // A slider row: the left text, the slider, the right text, the value's text. The slider counts stops (0 to
+        // SliderStops) and the field's value is Min + stop * Step, so Min and Max are reachable whatever the step.
+        private IConfigurableElement SliderRow(UIPanelBuilder b, int k)
+        {
+            SettingField f = _fields[k];
+            return Field(b, f, b.HStack(row =>
+            {
+                if (!string.IsNullOrEmpty(f.LeftLabel)) row.AddLabel(EndText(f.LeftLabel)).VerticalTextAlignment(VerticalAlignmentOptions.Middle);
+                RectTransform slider = row.AddSlider(() => (float)SliderStopOf(f, _values[k]), () => Format(f, _values[k]),
+                    stop => Guard("slide", () => { _values[k] = SliderValueAt(f, stop); _editNote = null; Edited(""); }),
+                    0f, (float)SliderStops(f), true).EqualFlexibleWidth(120f);
+                UnityEngine.UI.LayoutElement fit = slider.GetComponent<UnityEngine.UI.LayoutElement>();
+                if (fit != null) fit.minWidth = 100f;   // the end texts can't squeeze the slider out
+                if (!string.IsNullOrEmpty(f.RightLabel)) row.AddLabel(EndText(f.RightLabel)).VerticalTextAlignment(VerticalAlignmentOptions.Middle);
+                if (!f.Live) { row.Spacer(6f); row.AddLabel(RestartTag); }
+            }));
+        }
+
+        // A slider's end text: no tags, and at most 14 characters (longer is cut and ends in "...").
+        internal static string EndText(string s)
+        {
+            s = Plain(s);
+            if (s.Length <= 14) return s;
+            int n = char.IsHighSurrogate(s[12]) ? 12 : 13;
+            return s.Substring(0, n).TrimEnd() + "...";
+        }
+
+        // The number of steps from Min to Max (the last one may be short, so Max is always a stop).
+        internal static int SliderStops(SettingField f) => Math.Max(1, (int)Math.Ceiling((f.Max - f.Min) / f.Step - 1e-9));
+
+        // The value at a slider stop: Min + stop * Step, rounded like the field, never past Max.
+        internal static double SliderValueAt(SettingField f, double stop) =>
+            Math.Min(f.Max, Math.Max(f.Min, Round(f, f.Min + Math.Round(stop, MidpointRounding.AwayFromZero) * f.Step)));
+
+        // The stop nearest a value, by value (a value from a hand-edited file, between stops, shows at the nearest one
+        // and is kept until the slider is moved). A tie goes to the higher stop; the short last step counts as it is.
+        internal static double SliderStopOf(SettingField f, double v)
+        {
+            int last = SliderStops(f);
+            double lo = Math.Max(0, Math.Min(last, Math.Floor((v - f.Min) / f.Step))), hi = Math.Min(last, lo + 1);
+            return Math.Abs(SliderValueAt(f, hi) - v) <= Math.Abs(v - SliderValueAt(f, lo)) ? hi : lo;
+        }
+
         private IConfigurableElement NumberRow(UIPanelBuilder b, int k)
         {
             SettingField f = _fields[k];
             TMP_InputField input = null;
-            return b.AddField(f.Label, b.HStack(row =>
+            return Field(b, f, b.HStack(row =>
             {
                 row.AddButtonCompact("-", () => Guard("step", () => Step(k, -1, input)));
                 RectTransform rt = row.AddInputField(Format(f, _values[k]), text => Guard("type", () => Typed(k, text, input)), null, 12);
@@ -341,7 +476,7 @@ namespace SETTINGS_NAMESPACE
                 Note(got == TypedNumber.NotANumber
                     ? "That isn't a number, so " + f.Label + " stays at " + Format(f, before) + "."
                     : "Can't tell what " + Plain(text) + " means, so " + f.Label + " stays at " + Format(f, before) + ". Type it like "
-                      + (f.Places == 0 ? "1000 or 1,000." : "1000, 1,000 or 12.5."));
+                      + (f.Places == 0 ? "1 or 1000." : "1.5 or 1000."));
                 return;
             }
             double r = Round(f, v), c = Math.Max(f.Min, Math.Min(f.Max, r));
@@ -471,7 +606,7 @@ namespace SETTINGS_NAMESPACE
         private void BuildUnreadable(UIPanelBuilder b)
         {
             b.AddLabel("<color=#E8A33A>settings.json can't be read, so it's left alone: <noparse>" + PathClean.ForScreen(_problem ?? "unknown") + "</noparse></color>");
-            b.AddLabel(Footnote("Until it's fixed and saved here, or the game restarts, the mod keeps what it started with (its defaults, if the file was already like this). Fix or delete it, then press Check again."));
+            b.AddLabel(Footnote("Fix or delete it, then press Check again."));
             b.HStack(row =>
             {
                 row.AddButtonCompact(_showPath ? "Hide where it is" : "Show where it is", () => Guard("path", () => { _showPath = !_showPath; Redraw(b); }));
@@ -504,7 +639,7 @@ namespace SETTINGS_NAMESPACE
                 _values[i] = _saved[i] = v;
             }
             if (!first && _state != FileState.Unreadable && (moved || _behind != null))
-                _behind = "settings.json changed outside the game; this shows it as it is now. The mod keeps what it had until you Save here or restart.";
+                _behind = "settings.json changed outside the game. Save or restart to use it.";
             if (odd != null) _behind = odd;
         }
 
@@ -582,11 +717,11 @@ namespace SETTINGS_NAMESPACE
                 string raw = t.ToString(Formatting.None);
                 if (raw.Length > 24) raw = raw.Substring(0, 24) + "...";
                 odd = f.Kind == SettingKind.Choice
-                    ? "settings.json has " + f.Key + " = " + Plain(raw) + ", which isn't one of " + Plain(string.Join(", ", f.Options))
-                      + ", so the mod uses the default for this setting (" + Plain(f.OptionAt(f.Default)) + "). Save puts the file right."
-                    : "settings.json has " + f.Key + " = " + Plain(raw) + ", which the mod can't read as "
-                      + (f.Kind == SettingKind.Bool ? "on or off (true or false)" : f.Kind == SettingKind.Int ? "a whole number" : "a number")
-                      + ", so with this file it starts on all its defaults. Save puts the file right.";
+                    ? f.Key + " = " + Plain(raw) + " in settings.json isn't one of " + Plain(string.Join(", ", f.Options))
+                      + ", so the mod uses " + Plain(f.OptionAt(f.Default)) + "."
+                    : f.Key + " = " + Plain(raw) + " in settings.json isn't "
+                      + (f.Kind == SettingKind.Bool ? "on or off" : f.Kind == SettingKind.Int ? "a whole number" : "a number")
+                      + ", so the mod starts on its defaults.";
             }
             return f.Default;
         }
@@ -676,7 +811,7 @@ namespace SETTINGS_NAMESPACE
             string range = f.Kind == SettingKind.Bool ? ""
                 : f.Kind == SettingKind.Choice ? " One of " + string.Join(", ", f.Options) + "; default " + f.OptionAt(f.Default) + "."
                 : " From " + Format(f, f.Min) + " to " + Format(f, f.Max) + ", default " + Format(f, f.Default) + ".";
-            return f.Help + range + (f.Live ? " Takes effect when you save." : " Takes effect after a restart.");
+            return f.Help + range + (f.Live ? "" : " Needs a restart.");
         }
 
         private const string RestartTag = "<alpha=#B0><i>after restart</i>";
