@@ -2,11 +2,12 @@
 
 A settings editor for your Railroader mod in the game's Preferences window, under one shared **Mods** tab. One file,
 dropped into your project: no dependency, nothing for players to install. For Railroader 0.6.2 (Experimental branch).
-Revision 9.
+Revision 10.
 
-Each setting gets a row: a toggle, a dropdown, a number with - and + kept inside its range, or a slider with a label at
-each end, the default beside it, your help text in the tooltip. Long labels wrap to a second line, centered on a row that grows to fit. Saving writes your
-mod's `settings.json` safely and keeps any keys it doesn't know.
+Each setting gets a row: a toggle, a dropdown, a number with - and + kept inside its range, a slider with a label at
+each end, or a color, the default beside it, your help text in the tooltip. Long labels wrap to a second line,
+centered on a row that grows to fit. Saving writes your mod's `settings.json` safely and keeps every key that isn't one
+of its fields.
 
 ## Use it
 
@@ -34,10 +35,15 @@ internal static class SettingsUi
             SettingField.Choice("mode", "Mode", new[] { "nearest", "farthest" }, 0, false, "Which one goes first."),
             SettingField.IntSlider("steam", "Steam share", 50, 0, 100, 5, true, "Chance a locomotive is steam.",
                 "Diesel", "Steam"),
+            SettingField.Heading("Paint"),
+            SettingField.Color("color", "Lettering color", "#E8D9A0", true, "Color of the lettering."),
         };
         Action<string> log = m => MyMod.Log?.Warning("My Mod: " + m);
-        _section = new SettingsSection("My Mod", settingsPath, fields, MyMod.Applied, log);
+        var section = new SettingsSection("My Mod", settingsPath, fields, MyMod.Applied, log);
+        _section = section;
         PreferencesModsTab.Add(harmony, b => (_section as SettingsSection)?.Build(b, true), log);
+        // With Limits: run the held values; Current() is null when settings.json can't be read, so keep your own read.
+        MyMod.Settings = section.Current()?.ToObject<MySettings>() ?? MyMod.Settings;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -54,16 +60,57 @@ A slider saves exactly what a number row with the same key would, so a field can
 change to anyone's `settings.json`. The left label sits at the minimum.
 
 `MyMod.Applied` receives the saved file as a `JObject` when the player saves; fields marked live (`true`) can take
-effect then, the others are tagged "after restart". Your mod reads the same `settings.json` at load.
+effect then, the others are tagged "after restart". Your mod reads the same `settings.json` at load. The section reads
+it the way `JsonConvert.DeserializeObject` reads it into a class with `bool`, `int`, `float` and `string` members named
+like the keys, so its rows and status line show what your mod runs (NaN in a number is the one exception: it counts
+as a bad value). Save writes an infinite number as the field's Max or Min.
+
+## Options
+
+Chain these on a field. Each takes the section's current values, `s`: `s["key"]` (a toggle is 1 or 0, a choice its
+index, a color `0xRRGGBB`), `s.On("key")`, `s.Option("key")`. They run when a value changes, never per frame.
+
+- `.Limits(min, max)`: a number's range follows other fields, held live as the player edits:
+  `SettingField.Int("low", "Low", 10, 0, 100, 1, true, "...").Limits(max: s => s["high"])`.
+  A second `.Limits` keeps the first's limits and replaces only the ones it gives.
+  A number in the file outside its range shows held and is saved held. Read your settings yourself as before, then
+  take the held values in your start method, inside its try, as the example does:
+  `MyMod.Settings = section.Current()?.ToObject<MySettings>() ?? MyMod.Settings;`.
+  `Current()` is the saved `settings.json` as your mod's own read gets it, held; never unsaved edits. Keep limits and
+  `ShowWhen` free of loops: a loop that never settles stops after one pass per field and can leave a limit broken.
+- `.ValueLabel((v, s) => text)`: a live text after a number or slider, from its value and other fields:
+  `.ValueLabel((v, s) => (v * s["length"] / 100).ToString("0.#", CultureInfo.InvariantCulture) + " m")`.
+- `.ShowWhen(s => bool)`: the row shows only while true; a hidden row keeps its value:
+  `.ShowWhen(s => s.On("enabled"))`.
+
+`SettingField.Color` uses the game's own color picker and saves `"#RRGGBB"`; read it into a string and through
+`SettingField.TryColor` so a bad value falls back the same way. `SettingField.Heading("text")` draws a small heading
+between rows and saves nothing. A field with none of these draws as in Revision 9.
+
+## Search
+
+The Mods tab has a search box at the top (the game's own filter field): type part of a mod's name or of a setting's
+label and press Enter; its x clears it. A mod whose name matches shows all its settings; otherwise only the matching
+settings show, under their headings. Your section joins the search when it draws; there is nothing to call. Rows
+hidden by a search keep their values, and Save, Undo and Reset still act on every setting. A mod with an older
+revision of this file can't be searched by its settings: it shows when its name matches, and is hidden otherwise.
+That name is the one in the mod's Info.json (the name in Manage Mods), which can differ from its section title.
+
+Leaving the box also applies the search, and redraws the tab: a click made straight after typing, on a button
+elsewhere, is lost to that redraw. Press Enter first.
 
 ## Sharing the tab
 
-Every mod that carries this file, any revision, shares one Mods tab through a frozen contract written at the top of
+Every mod that carries this file, any revision, shares one Mods tab through a contract written at the top of
 `PreferencesModsTab` in the file: a `List<Action<UIPanelBuilder>>` stored as AppDomain data under
-`ashenmare.preferences-mods.v1`. The first mod in the list adds the tab; the tab draws every mod's section in turn, each
-in its own try. Only .NET and game types cross between mods, so copies from different authors and revisions get along.
-If you change the file, keep that contract exactly. A new revision never needs an update from any other mod: mixed
-revisions keep working side by side.
+`ashenmare.preferences-mods.v1`. Each mod adds its entry when it loads and removes it when it unloads; the mod whose
+entry is first adds the tab, which draws every mod's section, each in its own try. From Revision 10, a copy records its
+revision in a second slot (`ashenmare.preferences-mods.revisions.v1`) and moves its own entry to the front when it is
+newer than every entry before it, so the newest revision present draws the tab; that copy draws the mods A to Z by
+name, with the search box. Older revisions record nothing and count as revision 0, and only ever read the first entry,
+so they keep working beside it. Only .NET and game types cross between mods, so copies from different authors and
+revisions get along. If you change the file, keep that contract exactly. A new revision never needs an update from any
+other mod: mixed revisions keep working side by side.
 
 ## Logs
 
