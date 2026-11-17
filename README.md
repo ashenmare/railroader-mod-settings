@@ -1,7 +1,7 @@
 # Railroader mod settings
 
 A settings editor for your Railroader mod in the game's Preferences window, under one shared **Mods** tab. One file,
-dropped into your project: no dependency, nothing for players to install. For Railroader 0.6.2 (Experimental branch).
+dropped into your project: no dependency, nothing for players to install. For Railroader 0.6.2 and 0.6.3 (Experimental branch).
 Revision 10.
 
 Each setting gets a row: a toggle, a dropdown, a number with - and + kept inside its range, a slider with a label at
