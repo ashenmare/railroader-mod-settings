@@ -1,12 +1,12 @@
-// SettingsSection.cs (Revision 10)
+// SettingsSection.cs (Revision 11)
 // A settings editor for a Railroader mod, shown in Preferences > Mods (from the main menu and in game). Every mod that
 // carries this file shares one Mods tab.
 //
 // USE
 //   1. Copy this file into your mod. Change only the namespace line.
 //   2. Make a SettingsSection with your fields (SettingField.Bool, Int, Float, Choice, IntSlider, FloatSlider, Color,
-//      Heading) and your settings.json path. A slider field is a number field drawn as a slider: same key, same saved
-//      value.
+//      Heading, Group) and your settings.json path. A slider field is a number field drawn as a slider: same key,
+//      same saved value.
 //   3. Load: PreferencesModsTab.Add(harmony, b => section.Build(b, true), log). Unload: PreferencesModsTab.Remove().
 //   4. Your mod reads settings.json itself at load. `applied` gets the saved file (a JObject) when the player saves.
 //   5. Options, chained on a field (each returns a new field; a field without them draws and saves as before):
@@ -14,7 +14,16 @@
 //                            (a second .Limits keeps the first's limits and replaces only the ones it gives)
 //        .ValueLabel(text)   a number's or slider's live text, from its value as shown and the other fields:
 //                            .ValueLabel((v, s) => Math.Round(v * s["length"] / 100) + " m")
+//        .BubbleText(text)   a slider's handle bubble text, same arguments as ValueLabel, for a bubble that is not the
+//                            number: .BubbleText((v, s) => v >= 51 ? "Unlimited" : "$" + v)
+//        .ShownAs(scale, places)  a Float shown and typed as value x scale at that many decimals, saved as it is:
+//                            dollars a mile shown as cents: .ShownAs(100, 1) (see ShownAs below)
 //        .ShowWhen(show)     the row shows only while this is true: .ShowWhen(s => s.On("enabled"))
+//        .Mirror(current)    a value the mod holds in memory and something else may change (a switch another mod
+//                            flips): .Mirror(() => Switch.On ? 1 : 0); a toggle is 1 or 0, a choice its index, a
+//                            color 0xRRGGBB
+//      SettingField.Group("Steam") folds the fields after it up to the next Group (see Group below), and takes none of
+//      these options: SettingField.Float("rate", ...), SettingField.Group("Steam"), SettingField.Float("coal", ...).
 //      s is a SettingValues: the other fields' values as the rows show them now, saved or not (s["key"] a number, a
 //      toggle 1 or 0, a choice its index, a color 0xRRGGBB; s.On("key"); s.Option("key") a choice's text).
 //      A mod using Limits reads its settings itself as before, then in the NoInlining start that makes the section,
@@ -66,7 +75,16 @@
 //     (logged once). Keep them free of loops.
 //     Clicking into a held number and out again changes nothing.
 //   - ShowWhen: a hidden row keeps its value, unheld, and is saved as it is.
-//   - ValueLabel: after the slider's right end text or the number's + button, one line in a fixed width.
+//   - ValueLabel: after the slider's right end text or the number's + button, one line in a fixed width. On a
+//     slider the handle bubble shows the same text, unless the label is empty or BubbleText gives one.
+//   - ShownAs: Float fields (not sliders). The box, the default beside it, the tooltip and the notes show the value
+//     times scale at places decimals (0.145833 with ShownAs(100, 1) is 14.6); what the player types is read the same
+//     way, rounded to places and divided by scale, and a typed number that shows as the default's number is the
+//     default itself. The saved value, the field's Min, Max, Step and decimals, Limits and ValueLabel stay in the
+//     field's own units; the - and + buttons still move one Step. Put the unit in the label.
+//   - BubbleText: sliders only. The bubble shows this text (no tags, one line, cut at 14 characters) instead of the
+//     number; empty text, or one that throws (logged once), shows the number. It is worked out when a value changes,
+//     never per frame. A slider with neither option shows the number, as in Revision 10.
 //   - Color: the game's color dropdown (swatch, picker and a hex box), with the default dimmed beside it, saved as
 //     "#RRGGBB". The box and the file take #RRGGBB or #RGB (the # optional, any case). Anything else keeps the
 //     color; in the file it means the default, so read yours with SettingField.TryColor and the mod agrees.
@@ -75,8 +93,29 @@
 //     top that finds mods by name and settings by label, on Enter. A section joins the search as it draws; nothing to
 //     call. Under a search, a mod of an older revision draws only when its name matches. How it works:
 //     PreferencesModsTab, ModsOrder, ModsSearch.
-//   - Limits, ValueLabel and ShowWhen functions run when a value changes, never per frame. One that throws is logged
-//     once (a ShowWhen then shows its row, a ValueLabel shows nothing).
+//   - Group: SettingField.Group(title, startOpen: false) is a row with no key that saves nothing. It folds every
+//     field after it, up to the next Group; fields before the first Group are always shown, and a Heading after a
+//     Group is a plain heading inside it. One level only: no groups inside groups. Clicking the row opens or closes
+//     it (the game's own expandable, with its disclosure arrow, its text at the size of the labels). A field in a
+//     closed group is not drawn and keeps its value: Save, Undo, Reset to defaults, Limits, ShowWhen and Mirror
+//     treat it as if it were shown. Open or closed is the player's and is remembered across sessions in the game's
+//     own Preferences.json (GroupFolds, under "ashenmare.modsettings.group.<mod>/<group>"), never in settings.json:
+//     opening a group is not a change and the file is not touched. A search that matches a setting in a closed
+//     group (or its title) opens it for that search only; clearing the search gives back the player's choice. A
+//     mod-name match leaves groups as the player has them. A Group alone, with nothing under it, doesn't count as
+//     a match for a search. Only a copy of Revision 11 or later has Group, and each mod's section draws itself, so
+//     older revisions in the tab draw as before and no Group is ever drawn by older code. A group reads one level
+//     below the mod: its row, and the fields under it, each sit one step (GroupIndent, 12) in from the one above,
+//     with the game's arrow on the group row. Fields before the first Group and in a section with no Group draw
+//     exactly as in Revision 10.
+//   - Mirror: each time the section draws, the field shows what its function gives. Save writes it only if the
+//     player changed it here since it was last read; an unchanged one is left as the file has it (its key and any
+//     other-capitals spelling too), and the mod's applied callback gets the function's value under its key. Reset to
+//     defaults writes it too. It is left out of "settings.json changed outside the game". A change made here and not
+//     saved is kept across a redraw. A function that throws or gives no number is logged once and the row keeps its
+//     value. Current() still gives the file's value.
+//   - Limits, ValueLabel, BubbleText and ShowWhen functions run when a value changes, never per frame. One that throws
+//     is logged once (a ShowWhen then shows its row, a ValueLabel shows nothing, a BubbleText shows the number).
 //   - Reset to defaults asks first. Nothing runs per frame: rows are built when the game builds the panel, edits update
 //     in place, and a click asks the game for a rebuild after it, never inside it.
 //   - Nothing throws into the game; each problem is logged once.
@@ -112,14 +151,16 @@ namespace SETTINGS_NAMESPACE
         internal readonly string[] Options;   // Choice only: the texts written to the file, in dropdown order
         internal readonly bool Slider;        // Int or Float drawn as a slider (same key and saved value as without)
         internal readonly string LeftLabel, RightLabel, ValueText;   // slider only: the end texts; ValueText is kept, not drawn
+        internal readonly bool IsGroup, StartOpen;   // Group only (a Group is a keyless Heading kind): the fields up to the next Group fold under it
 
         private SettingField(string key, string label, SettingKind kind, double def, double min, double max, double step,
                              int decimals, bool live, string help, string[] options = null, bool slider = false,
-                             string left = null, string right = null, string valueText = null)
+                             string left = null, string right = null, string valueText = null, bool group = false, bool open = false)
         {
             Key = key; Label = label; Kind = kind; Default = def; Min = min; Max = max; Step = step;
             Decimals = decimals; Live = live; Help = help; Options = options;
             Slider = slider; LeftLabel = left; RightLabel = right; ValueText = valueText;
+            IsGroup = group; StartOpen = open;
         }
 
         internal static SettingField Bool(string key, string label, bool def, bool live, string help) =>
@@ -186,6 +227,22 @@ namespace SETTINGS_NAMESPACE
         // A small heading between rows. It has no key and saves nothing.
         internal static SettingField Heading(string text) => new SettingField(null, text, SettingKind.Heading, 0, 0, 0, 1, 0, true, null);
 
+        // A row that opens and closes the fields after it, up to the next Group. It has no key and saves nothing.
+        // Fields before the first Group stay always shown; a Heading under a Group is a plain heading inside it. One
+        // level only: there are no groups inside groups. Whether it is open is the player's, kept by the game
+        // (GroupFolds), never in settings.json; startOpen is how it first shows.
+        internal static SettingField Group(string title, bool startOpen = false) =>
+            new SettingField(null, title, SettingKind.Heading, 0, 0, 0, 1, 0, true, null, group: true, open: startOpen);
+
+        // The index after the last field under the Group at g: the next Group's, or the list's end. A group with
+        // nothing under it ends right after itself.
+        internal static int GroupEnd(SettingField[] fields, int g)
+        {
+            int e = g + 1;
+            while (e < fields.Length && !fields[e].IsGroup) e++;
+            return e;
+        }
+
         // Reads a color the way the section does: #RRGGBB or #RGB, the # optional, any case, outer spaces ignored.
         // rgb is 0xRRGGBB. False for anything else (a name, an alpha, a stray character).
         internal static bool TryColor(string text, out int rgb)
@@ -208,11 +265,16 @@ namespace SETTINGS_NAMESPACE
         // 0xRRGGBB as "#RRGGBB", capitals.
         internal static string ColorHex(int rgb) => "#" + (rgb & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture);
 
-        // The options, null when unused. Set through Limits, ValueLabel and ShowWhen, which return a copy.
+        // The options, null when unused: Limits, ValueLabel, BubbleText, ShownAs, ShowWhen, Mirror each return a copy.
         internal Func<SettingValues, double> MinOf { get; private set; }
         internal Func<SettingValues, double> MaxOf { get; private set; }
         internal Func<double, SettingValues, string> ValueLabelOf { get; private set; }
+        internal Func<double, SettingValues, string> BubbleOf { get; private set; }
         internal Func<SettingValues, bool> ShowIf { get; private set; }
+        internal Func<double> MirrorOf { get; private set; }
+        internal double ShownScale { get; private set; } = 1;   // ShownAs: the box shows value x ShownScale at ShownPlaces
+        internal int ShownPlaces { get; private set; }
+        internal bool Shown => ShownScale != 1;
 
         // A number whose range follows other fields: min and max (either may be null) give the limits from the
         // section's current values. Min and Max stay the outer bounds. A limit left null keeps one an earlier
@@ -235,11 +297,52 @@ namespace SETTINGS_NAMESPACE
             return c;
         }
 
+        // A slider's handle bubble text, from its value as shown and the other fields' values.
+        internal SettingField BubbleText(Func<double, SettingValues, string> text)
+        {
+            if (!Slider) throw new ArgumentException(Key + ": BubbleText is for slider fields");
+            if (text == null) throw new ArgumentException(Key + ": BubbleText needs a function");
+            SettingField c = Copy();
+            c.BubbleOf = text;
+            return c;
+        }
+
+        // A Float shown and typed as value x scale at places decimals, saved as it is.
+        internal SettingField ShownAs(double scale, int places)
+        {
+            if (Kind != SettingKind.Float || Slider) throw new ArgumentException(Key + ": ShownAs is for Float fields, not sliders");
+            if (!(scale > 0) || double.IsInfinity(scale) || places < 0 || places > 6) throw new ArgumentException(Key + ": ShownAs needs a positive scale and 0 to 6 places");
+            SettingField c = Copy();
+            c.ShownScale = scale; c.ShownPlaces = places;
+            return c;
+        }
+
+        // What the player typed in the shown units, as the field's own value: rounded to the shown places, and the
+        // default itself when it shows as the default's number.
+        internal double FromShown(double typed)
+        {
+            double s = Math.Round(typed, ShownPlaces, MidpointRounding.AwayFromZero);
+            return s == Math.Round(Default * ShownScale, ShownPlaces, MidpointRounding.AwayFromZero) ? Default : s / ShownScale;
+        }
+
         // The row shows only while show is true. A hidden row keeps its value and is saved as it is.
         internal SettingField ShowWhen(Func<SettingValues, bool> show)
         {
+            if (IsGroup) throw new ArgumentException("ShowWhen is for fields, not a Group");
             SettingField c = Copy();
             c.ShowIf = show;
+            return c;
+        }
+
+        // The field shows a value the mod holds and something else may change, read each time the section draws:
+        // current gives it as the field holds it (a toggle 1 or 0, a choice its index, a color 0xRRGGBB). Save writes
+        // the field only if it was changed here, so a section drawn before another change can't undo it.
+        internal SettingField Mirror(Func<double> current)
+        {
+            if (Kind == SettingKind.Heading) throw new ArgumentException("Mirror is for fields with a value");
+            if (current == null) throw new ArgumentException(Key + ": Mirror needs a function");
+            SettingField c = Copy();
+            c.MirrorOf = current;
             return c;
         }
 
@@ -252,8 +355,8 @@ namespace SETTINGS_NAMESPACE
 
         internal bool Linked => MinOf != null || MaxOf != null;
 
-        // Has an option, or is a Color or a Heading. A field that isn't takes the plain rows.
-        internal bool Extra => Linked || ValueLabelOf != null || ShowIf != null || Kind == SettingKind.Color || Kind == SettingKind.Heading;
+        // Has an option, or is a Color, a Heading or a Group. A field that isn't takes the plain rows.
+        internal bool Extra => Linked || ValueLabelOf != null || BubbleOf != null || ShowIf != null || Kind == SettingKind.Color || Kind == SettingKind.Heading;
     }
 
     // The section's values by key as its rows show them now (held in range, saved or not), for Limits, ValueLabel and
@@ -295,7 +398,7 @@ namespace SETTINGS_NAMESPACE
 
     internal sealed class SettingsSection
     {
-        internal const int Revision = 10;
+        internal const int Revision = 11;
 
         private enum FileState { Missing, Read, Unreadable }
 
@@ -308,6 +411,12 @@ namespace SETTINGS_NAMESPACE
         private readonly UIState<bool> _searchOpen = new UIState<bool>(true);   // open or closed while a search shows it
         private string _searchFor;       // the query _searchOpen was last opened for
         private bool[] _search;          // the rows the search shows in this draw; null: every row
+        private bool _searching;         // this draw is under a search (a group then draws from _foldSearch)
+        // Group rows only (null elsewhere): the player's open or closed, and the search's own. A search opens a
+        // closed group that holds a match in _foldSearch and never touches _fold, so the player's choice comes back.
+        private readonly UIState<bool>[] _fold, _foldSearch;
+        private readonly bool[] _foldStored;   // what the game's store holds for each group (or its start state, unwritten)
+        private bool _foldsRead;
         private readonly double[] _values, _saved;
 
         private bool _loaded, _confirmReset, _showPath, _redraw;
@@ -327,6 +436,7 @@ namespace SETTINGS_NAMESPACE
         private readonly double[] _held, _check;
         private readonly bool[] _shown, _checkShown;
         private readonly string[] _labels;              // each ValueLabel's text for the held values
+        private readonly string[] _bubbles;             // each slider's bubble text for the held values (null: the number)
         private readonly SettingValues _view, _checkView;
         private readonly bool _extras;
         private RectTransform[] _rows;                  // the last build's rows, to show or hide in place
@@ -341,7 +451,7 @@ namespace SETTINGS_NAMESPACE
             _saved = new double[_fields.Length];
             for (int i = 0; i < _fields.Length; i++) _values[i] = _saved[i] = _fields[i].Default;
             int n = _fields.Length;
-            _held = new double[n]; _check = new double[n]; _shown = new bool[n]; _checkShown = new bool[n]; _labels = new string[n];
+            _held = new double[n]; _check = new double[n]; _shown = new bool[n]; _checkShown = new bool[n]; _labels = new string[n]; _bubbles = new string[n];
             _view = new SettingValues(_fields, _held);
             _checkView = new SettingValues(_fields, _check);
             for (int i = 0; i < n; i++)
@@ -350,11 +460,20 @@ namespace SETTINGS_NAMESPACE
                 _shown[i] = true;
                 if (_fields[i].Extra) _extras = true;
             }
+            for (int i = 0; i < n; i++)
+                if (_fields[i].IsGroup)
+                {
+                    if (_fold == null) { _fold = new UIState<bool>[n]; _foldSearch = new UIState<bool>[n]; _foldStored = new bool[n]; }
+                    _fold[i] = new UIState<bool>(_fields[i].StartOpen);
+                    _foldSearch[i] = new UIState<bool>(_fields[i].StartOpen);
+                    _foldStored[i] = _fields[i].StartOpen;
+                }
             ModsOrder.Made(_title);   // the mod's name in the Mods tab's order, if it is the first section made
             // Read now, while the mod has just read the same file, so a later change on disk is known to be one it
             // hasn't got.
             try { Refresh(); }
             catch (Exception e) { LogOnce("read", _title + ": couldn't read settings.json for the settings section: " + PathClean.CleanText(e.Message)); }
+            ReadMirrors();
         }
 
         // Draws the section into a panel. collapsible: a header that opens and closes (the Preferences Mods tab);
@@ -373,7 +492,7 @@ namespace SETTINGS_NAMESPACE
                     catch (Exception e) { LogOnce("search", _title + ": the search failed: " + PathClean.CleanText(e.Message)); }
                     if (SearchState(q)) b.AddExpandable(_title, q == null ? _expanded : _searchOpen, Content, ExpandableStyle.SectionHeader);
                 }
-                else { _search = null; Content(b); }
+                else { _search = null; _searching = false; Content(b); }
             }
             catch (Exception e)
             {
@@ -383,18 +502,28 @@ namespace SETTINGS_NAMESPACE
         }
 
         // The rows a search shows: null when the mod's name matches (every row), else one flag per field: a row whose
-        // label matches, every row under a heading that matches, and a heading with any row under it shown. All false:
-        // nothing here matches.
+        // label matches, every row under a heading or a group that matches, and a heading or group with any row under
+        // it shown. A group ends a heading's reach, and a heading inside a group is inside it. All false: nothing here
+        // matches.
         internal bool[] SearchRows(string q)
         {
             if (ModsSearch.Matches(_title, q)) return null;
             var show = new bool[_fields.Length];
-            int heading = -1;
+            int heading = -1, group = -1;
             for (int i = 0; i < _fields.Length; i++)
             {
-                if (_fields[i].Kind == SettingKind.Heading) { heading = i; show[i] = ModsSearch.Matches(_fields[i].Label, q); continue; }
-                show[i] = ModsSearch.Matches(_fields[i].Label, q) || heading >= 0 && ModsSearch.Matches(_fields[heading].Label, q);
+                if (_fields[i].IsGroup) { group = i; heading = -1; show[i] = ModsSearch.Matches(_fields[i].Label, q); continue; }
+                if (_fields[i].Kind == SettingKind.Heading)
+                {
+                    heading = i;
+                    show[i] = ModsSearch.Matches(_fields[i].Label, q) || group >= 0 && ModsSearch.Matches(_fields[group].Label, q);
+                    if (show[i] && group >= 0) show[group] = true;
+                    continue;
+                }
+                show[i] = ModsSearch.Matches(_fields[i].Label, q) || heading >= 0 && ModsSearch.Matches(_fields[heading].Label, q)
+                          || group >= 0 && ModsSearch.Matches(_fields[group].Label, q);
                 if (show[i] && heading >= 0) show[heading] = true;
+                if (show[i] && group >= 0) show[group] = true;
             }
             return show;
         }
@@ -403,11 +532,33 @@ namespace SETTINGS_NAMESPACE
         // (_searchOpen), and no query forgets the last one, so the same search opens it again next time.
         internal bool SearchState(string q)
         {
+            _searching = q != null;
             if (q == null) { _search = null; _searchFor = null; return true; }
             if (!SearchShows(q)) { _search = null; return false; }
             _search = SearchRows(q);
-            if (q != _searchFor) { _searchFor = q; _searchOpen.Value = true; }
+            if (q != _searchFor)
+            {
+                _searchFor = q;
+                _searchOpen.Value = true;
+                OpenGroupsFor(_search);
+            }
             return true;
+        }
+
+        // A new query: each group starts as the player left it, and opens if a row the search shows is under it. The
+        // player's own state (_fold) is not changed, so clearing the search brings it back.
+        private void OpenGroupsFor(bool[] rows)
+        {
+            if (_fold == null) return;
+            ReadFolds();
+            for (int g = 0; g < _fields.Length; g++)
+            {
+                if (_foldSearch[g] == null) continue;
+                bool open = _fold[g].Value;
+                for (int j = g + 1; j < GroupEnd(g) && !open && rows != null; j++)
+                    open = rows[j] && (_fields[j].Kind == SettingKind.Heading || _shown[j]);
+                _foldSearch[g].Value = open;
+            }
         }
 
         // Whether a search for q shows this section: its name matches, or a row it would draw and ShowWhen shows does.
@@ -438,6 +589,7 @@ namespace SETTINGS_NAMESPACE
             }
             if (!_redraw) _status = "";   // opened afresh, not redrawn after one of its own clicks
             _redraw = false;
+            ReadMirrors();
             Refresh();
             Recompute();   // after an Undo or Reset too
             if (!string.IsNullOrEmpty(_note)) b.AddLabel(Footnote(_note));
@@ -448,18 +600,7 @@ namespace SETTINGS_NAMESPACE
                 return;
             }
 
-            for (int i = 0; i < _fields.Length; i++)
-            {
-                int k = i;
-                SettingField f = _fields[k];
-                if (_search != null && !_search[k]) continue;   // hidden by the search: not drawn, value kept
-                if (f.Extra) { ExtraRow(b, k); continue; }
-                IConfigurableElement row = f.Kind == SettingKind.Bool ? BoolRow(b, k)
-                                         : f.Kind == SettingKind.Choice ? ChoiceRow(b, k)
-                                         : f.Slider ? SliderRow(b, k)
-                                         : NumberRow(b, k);
-                row.Tooltip(f.Label, HelpText(f));
-            }
+            DrawRows(b);
 
             if (_confirmReset)
             {
@@ -471,7 +612,7 @@ namespace SETTINGS_NAMESPACE
                         _confirmReset = false;
                         for (int i = 0; i < _fields.Length; i++) _values[i] = _fields[i].Default;
                         bool restart = ChangesNeedRestart();
-                        if (SaveFile(out string error, out bool applied))
+                        if (SaveFileWith(out string error, out bool applied, true))
                             _status = !applied ? NotApplied
                                 : restart ? "Back to the defaults. Takes effect after a restart." : "Back to the defaults. Takes effect now.";
                         else _status = error;
@@ -511,6 +652,98 @@ namespace SETTINGS_NAMESPACE
                 });
             }
             _statusText = b.AddLabel(Footnote(StatusShown())).GetComponent<TMP_Text>();
+        }
+
+        // The fields' rows in order: those before the first Group always, then each Group's row that folds the fields
+        // under it (a Group the search doesn't show is not drawn, nor its fields). A row the search hides is not drawn
+        // and keeps its value, as does a row in a closed group: Save, Undo and Reset act on every field.
+        private void DrawRows(UIPanelBuilder b)
+        {
+            ReadFolds();
+            for (int i = 0; i < _fields.Length; i++)
+            {
+                if (_search != null && !_search[i]) continue;   // hidden by the search: not drawn, value kept
+                if (_fields[i].IsGroup)
+                {
+                    int g = i, end = GroupEnd(g);
+                    UIState<bool> state = _searching ? _foldSearch[g] : _fold[g];
+                    if (!_searching) SyncFold(g);
+                    Indented(b, head => head.AddExpandable(GroupText(_fields[g].Label), state, inner =>
+                        Indented(inner, rows =>
+                        {
+                            for (int j = g + 1; j < end; j++)
+                                if (_search == null || _search[j]) DrawRow(rows, j);
+                        }), ExpandableStyle.Label));
+                    i = end - 1;
+                    continue;
+                }
+                DrawRow(b, i);
+            }
+        }
+
+        private void DrawRow(UIPanelBuilder b, int k)
+        {
+            SettingField f = _fields[k];
+            if (f.Extra) { ExtraRow(b, k); return; }
+            IConfigurableElement row = f.Kind == SettingKind.Bool ? BoolRow(b, k)
+                                     : f.Kind == SettingKind.Choice ? ChoiceRow(b, k)
+                                     : f.Slider ? SliderRow(b, k)
+                                     : NumberRow(b, k);
+            row.Tooltip(f.Label, HelpText(f));
+        }
+
+        // One step in: the content in a vertical stack padded GroupIndent on the left, spaced as the stack it sits in.
+        // A group row and the fields under it each take one, so mod, group and field read as three levels.
+        internal const int GroupIndent = 12;
+
+        private static void Indented(UIPanelBuilder b, Action<UIPanelBuilder> content)
+        {
+            RectTransform stack = b.VStack(content);
+            if (stack == null) return;
+            UnityEngine.UI.VerticalLayoutGroup mine = stack.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+            UnityEngine.UI.VerticalLayoutGroup outer = stack.parent == null ? null : stack.parent.GetComponent<UnityEngine.UI.VerticalLayoutGroup>();
+            if (mine == null) return;
+            mine.padding = new RectOffset(GroupIndent, 0, 0, 0);
+            if (outer != null) mine.spacing = outer.spacing;
+        }
+
+        // A group's row text at the size of the section's labels. The game's expandable text is 16 pt (labelControl);
+        // the field labels are 12 pt in capitals (the field row's Label, autosize 8 to 12, style UpperCase).
+        internal static string GroupText(string label) => "<size=12><uppercase>" + label + "</uppercase></size>";
+
+        // The field after the last one of the group at g: the next Group, or the end.
+        internal int GroupEnd(int g) => SettingField.GroupEnd(_fields, g);
+
+        // The player's remembered open or closed for each group, read once from the game's store.
+        private void ReadFolds()
+        {
+            if (_fold == null || _foldsRead) return;
+            _foldsRead = true;
+            for (int g = 0; g < _fields.Length; g++)
+            {
+                if (_fold[g] == null) continue;
+                int v = -1;
+                try { v = GroupFolds.Get(FoldKey(g)); }
+                catch (Exception e) { LogOnce("fold", _title + ": couldn't read which groups are open: " + PathClean.CleanText(e.Message)); }
+                if (v >= 0) { _fold[g].Value = v != 0; _foldStored[g] = v != 0; _foldSearch[g].Value = v != 0; }
+            }
+        }
+
+        // The game redraws the panel after a click on a group, so a change of the player's choice is seen here, in the
+        // next draw, and kept. A search's own opening or closing is never kept.
+        private void SyncFold(int g)
+        {
+            if (_fold[g].Value == _foldStored[g]) return;
+            _foldStored[g] = _fold[g].Value;
+            try { GroupFolds.Put(FoldKey(g), _foldStored[g] ? 1 : 0); }
+            catch (Exception e) { LogOnce("fold", _title + ": couldn't keep which groups are open: " + PathClean.CleanText(e.Message)); }
+        }
+
+        private string FoldKey(int g)
+        {
+            int nth = 0;
+            for (int i = 0; i < g; i++) if (_fields[i].IsGroup && _fields[i].Label == _fields[g].Label) nth++;
+            return GroupFolds.KeyOf(_title, _fields[g].Label, nth);
         }
 
         private const string NotApplied = "Saved. Takes effect after a restart; the log says why.";
@@ -581,9 +814,9 @@ namespace SETTINGS_NAMESPACE
         // the row's layout group does not control child height), which holds one line of 14.6 px but not two lines
         // with room to spare. A label that wraps makes its row taller: the row and the label go to LabelRowHeight and
         // the label's text box (the rect less LabelPadBottom, split top and bottom) holds two lines (29.3 px) but not a
-        // third (43.9 px), so a third line's worth of text ends in "..." on the second. The game's label aligns its first
-        // line's capline to the middle (prefab vertical alignment Capline), which leaves a second line hanging below; a
-        // wrapped label is set to Middle so both lines sit centered on the row. The label is measured with the
+        // third (43.9 px), so a third line's worth of text ends in "..." on the second. The game's label aligns its
+        // first line's capline to the middle (prefab vertical alignment Capline), which leaves a second line hanging
+        // below; a wrapped label is set to Middle so both lines sit centered on the row. The label is measured with the
         // engine's own text measure at a width a little under the label's 150, so a borderline label gets the tall row.
         internal const float LabelRowHeight = 44f, LabelPadBottom = 8f, LabelMeasureWidth = 146f, LabelLineHeightPt = 109.71f / 90f;
 
@@ -740,7 +973,7 @@ namespace SETTINGS_NAMESPACE
             return Field(b, f, b.HStack(row =>
             {
                 if (!string.IsNullOrEmpty(f.LeftLabel)) row.AddLabel(EndText(f.LeftLabel)).VerticalTextAlignment(VerticalAlignmentOptions.Middle);
-                RectTransform slider = row.AddSlider(() => (float)SliderStopOf(f, _held[k]), () => Format(f, _held[k]),
+                RectTransform slider = row.AddSlider(() => (float)SliderStopOf(f, _held[k]), () => BubbleNow(k),
                     stop => Guard("slide", () => { _values[k] = HoldIn(k, SliderValueAt(f, stop), _view); _editNote = null; Edited(""); }),
                     0f, (float)SliderStops(f), true).EqualFlexibleWidth(120f);
                 UnityEngine.UI.LayoutElement fit = slider.GetComponent<UnityEngine.UI.LayoutElement>();
@@ -836,7 +1069,7 @@ namespace SETTINGS_NAMESPACE
         {
             SettingField f = _fields[k];
             double before = _held[k];
-            TypedNumber got = ParseTyped(text, f.Places, out double v);
+            TypedNumber got = ParseTyped(text, f.Shown ? f.ShownPlaces : f.Places, out double v);
             if (got != TypedNumber.Ok)
             {
                 Set(k, _values[k], input);   // unchanged; a held value is shown again by Edited
@@ -846,6 +1079,7 @@ namespace SETTINGS_NAMESPACE
                       + (f.Places == 0 ? "1 or 1000." : "1.5 or 1000."));
                 return;
             }
+            if (f.Shown) v = f.FromShown(v);
             double r = Round(f, v);
             if (f.Linked && r == _held[k] && _values[k] != _held[k])
             {
@@ -972,7 +1206,11 @@ namespace SETTINGS_NAMESPACE
             Settle(_values, _held, _shown, _view);
             if (!_extras) return;
             for (int i = 0; i < _fields.Length; i++)
+            {
                 if (_fields[i].ValueLabelOf != null) _labels[i] = LabelFor(i);
+                if (_fields[i].BubbleOf != null) _bubbles[i] = BubbleFor(i);
+                else if (_fields[i].Slider && _fields[i].ValueLabelOf != null) _bubbles[i] = BubbleOfText(_labels[i]);
+            }
         }
 
         // Fills held from raw: each shown field with Limits held in its range, in field order from the held values so
@@ -1050,6 +1288,24 @@ namespace SETTINGS_NAMESPACE
             }
         }
 
+        // A slider bubble's text for the held values: no tags, one line, at most 14 characters; null (the number) when
+        // empty or when the function fails.
+        private string BubbleFor(int k)
+        {
+            SettingField f = _fields[k];
+            try { return BubbleOfText(Plain(f.BubbleOf(_held[k], _view)).Replace('\r', ' ').Replace('\n', ' ')); }
+            catch (Exception e)
+            {
+                LogOnce("bubble:" + f.Key, _title + ": the bubble text of " + f.Key + " failed: " + PathClean.CleanText(e.Message));
+                return null;
+            }
+        }
+
+        internal static string BubbleOfText(string s) => string.IsNullOrWhiteSpace(s) ? null : EndText(s.Trim());
+
+        // The text the bubble shows now: the cached text, else the number as Revision 10 showed it.
+        private string BubbleNow(int k) => _bubbles[k] ?? Format(_fields[k], _held[k]);
+
         // A value label's text for the held values: no tags, one line.
         private string LabelFor(int k)
         {
@@ -1118,16 +1374,17 @@ namespace SETTINGS_NAMESPACE
         }
 
         // Writes values into o, every field but a heading, each under its own key: the same key in other capitals goes,
-        // as the mod's own read would take it in place of this one.
-        private JObject WithValues(JObject o, double[] values)
+        // as the mod's own read would take it in place of this one. The fields in keep (null: none) are left as o
+        // has them.
+        private JObject WithValues(JObject o, double[] values, bool[] keep = null)
         {
             foreach (JProperty p in new List<JProperty>(o.Properties()))
             {
                 int i = Target(p.Name);
-                if (i >= 0 && p.Name != _fields[i].Key) p.Remove();
+                if (i >= 0 && p.Name != _fields[i].Key && !(keep != null && keep[i])) p.Remove();
             }
             for (int i = 0; i < _fields.Length; i++)
-                if (_fields[i].Kind != SettingKind.Heading) o[_fields[i].Key] = Token(_fields[i], values[i]);
+                if (_fields[i].Kind != SettingKind.Heading && !(keep != null && keep[i])) o[_fields[i].Key] = Token(_fields[i], values[i]);
             return o;
         }
 
@@ -1179,6 +1436,11 @@ namespace SETTINGS_NAMESPACE
             bool moved = false;
             for (int i = 0; i < _fields.Length; i++)
             {
+                if (_fields[i].MirrorOf != null)
+                {
+                    if (first) _values[i] = _saved[i] = read[i];   // until the first read of the mod's own value
+                    continue;   // not the file's: ReadMirrors gives it, and a change on disk isn't "outside the game"
+                }
                 moved |= read[i] != _saved[i];
                 _values[i] = _saved[i] = read[i];
             }
@@ -1186,6 +1448,36 @@ namespace SETTINGS_NAMESPACE
                 _behind = "settings.json changed outside the game. Save or restart to use it.";
             if (odd != null) _behind = odd;
             Recompute();   // a value outside its Limits is shown held; the file keeps it until a save
+        }
+
+        // Gives each Mirror field the value its function returns now: the field shows it and _saved holds it, so
+        // Save can tell a change made here from a stale row. A change made here and not saved stays (unsaved edits win,
+        // as in Refresh). A function that throws or gives no number is logged once and the field keeps its value.
+        private void ReadMirrors()
+        {
+            bool touched = false;
+            for (int i = 0; i < _fields.Length; i++)
+            {
+                SettingField f = _fields[i];
+                if (f.MirrorOf == null) continue;
+                double v;
+                try { v = f.MirrorOf(); }
+                catch (Exception e)
+                {
+                    LogOnce("mirror:" + f.Key, _title + ": the live value of " + f.Key + " failed: " + PathClean.CleanText(e.Message));
+                    continue;
+                }
+                if (double.IsNaN(v) || double.IsInfinity(v))
+                {
+                    LogOnce("mirror:" + f.Key, _title + ": the live value of " + f.Key + " isn't a number.");
+                    continue;
+                }
+                v = f.Kind == SettingKind.Bool ? (v != 0 ? 1 : 0) : Math.Max(f.Min, Math.Min(f.Max, Round(f, v)));
+                if (_values[i] == _saved[i]) _values[i] = v;
+                _saved[i] = v;
+                touched = true;
+            }
+            if (touched) Recompute();
         }
 
         private string Stamp()
@@ -1412,7 +1704,11 @@ namespace SETTINGS_NAMESPACE
             catch (Exception) { return null; }
         }
 
-        private bool SaveFile(out string error, out bool applied)
+        private bool SaveFile(out string error, out bool applied) => SaveFileWith(out error, out applied, false);
+
+        // everyMirror: Reset, which writes the Mirror fields too. Otherwise a Mirror field is written only if it was
+        // changed here since it was last read; the others are left as the file has them.
+        private bool SaveFileWith(out string error, out bool applied, bool everyMirror)
         {
             error = null;
             applied = false;
@@ -1426,11 +1722,15 @@ namespace SETTINGS_NAMESPACE
                 error = "Not saved: settings.json can't be read, so it's left alone.";
                 return false;
             }
+            if (!everyMirror) ReadMirrors();   // Reset's defaults are what the player asked for, whatever the mod holds now
             Recompute();
             double[] w = new double[_held.Length];
             for (int i = 0; i < w.Length; i++) w[i] = Writable(_fields[i], _held[i]);
+            bool[] keep = null;
+            for (int i = 0; i < w.Length; i++)
+                if (_fields[i].MirrorOf != null && !everyMirror && _values[i] == _saved[i]) { if (keep == null) keep = new bool[w.Length]; keep[i] = true; }
             JToken before = disk?.DeepClone();
-            JObject o = WithValues(disk ?? new JObject(), w);   // a value outside its Limits is saved held
+            JObject o = WithValues(disk ?? new JObject(), w, keep);   // a value outside its Limits is saved held
             _updated = before == null || !JToken.DeepEquals(before, o);
             string tmp = _path + ".tmp";
             try
@@ -1446,12 +1746,20 @@ namespace SETTINGS_NAMESPACE
                 error = "Couldn't save: <noparse>" + PathClean.ForScreen(e.Message) + "</noparse>";
                 return false;
             }
-            Array.Copy(w, _values, _values.Length);
-            Array.Copy(w, _saved, _values.Length);
+            for (int i = 0; i < w.Length; i++)
+                if (keep == null || !keep[i]) _values[i] = _saved[i] = w[i];
             _state = FileState.Read;
             _stamp = Stamp();
             _loaded = true;
-            try { _applied?.Invoke(o); applied = true; }
+            JObject given = o;
+            if (keep != null)
+            {
+                // the mod's callback gets the live value of a Mirror field left alone, not the file's
+                var only = new bool[w.Length];
+                for (int i = 0; i < w.Length; i++) only[i] = !keep[i];
+                given = WithValues((JObject)o.DeepClone(), w, only);
+            }
+            try { _applied?.Invoke(given); applied = true; }
             catch (Exception e) { LogOnce("apply", _title + ": saved settings.json, but couldn't apply it until a restart: " + PathClean.CleanText(e.ToString(), WholeCap)); }
             _behind = applied ? null : NotApplied;
             return true;
@@ -1478,7 +1786,9 @@ namespace SETTINGS_NAMESPACE
         private static double Round(SettingField f, double v) => Math.Round(v, f.Places, MidpointRounding.AwayFromZero);
 
         private static string Format(SettingField f, double v) =>
-            double.IsInfinity(v) || double.IsNaN(v) ? Plain(v) : f.Places == 0 ? ((long)Round(f, v)).ToString(CultureInfo.InvariantCulture)
+            f.Shown && !double.IsInfinity(v) && !double.IsNaN(v)
+                ? Math.Round(Round(f, v) * f.ShownScale, f.ShownPlaces, MidpointRounding.AwayFromZero).ToString("0." + new string('#', f.ShownPlaces), CultureInfo.InvariantCulture)
+                : double.IsInfinity(v) || double.IsNaN(v) ? Plain(v) : f.Places == 0 ? ((long)Round(f, v)).ToString(CultureInfo.InvariantCulture)
                           : Round(f, v).ToString("0." + new string('#', f.Places), CultureInfo.InvariantCulture);
 
         private static string Plain(double v) => v.ToString("0.##########", CultureInfo.InvariantCulture);
@@ -1525,6 +1835,28 @@ namespace SETTINGS_NAMESPACE
         {
             if (_logged.Add(key)) { try { _log?.Invoke(message); } catch { } }
         }
+    }
+
+    // Which groups the player has open, kept in the game's own preferences file (Preferences.json, the store its
+    // windows keep their positions in): per player, across sessions, and outside every mod's settings.json, so opening
+    // a group is never a change to save and no copy of any revision reads or writes it by accident. The game types
+    // are touched only inside the NoInlining methods, so a game without them costs only the memory of what was open.
+    internal static class GroupFolds
+    {
+        internal const string Prefix = "ashenmare.modsettings.group.";
+
+        // Tests (and nothing else) replace these.
+        internal static Func<string, int> Get = Read;        // the stored 1 or 0, -1 for none
+        internal static Action<string, int> Put = Write;
+
+        internal static string KeyOf(string title, string label, int nth) =>
+            Prefix + title + "/" + label + (nth > 0 ? "#" + (nth + 1).ToString(CultureInfo.InvariantCulture) : "");
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static int Read(string key) => global::Game.GlobalPreferences.HasKey(key) ? global::Game.GlobalPreferences.GetInt(key, 0) : -1;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void Write(string key, int value) => global::Game.GlobalPreferences.SetInt(key, value);
     }
 
     // One "Mods" tab in the game's Preferences window, shared by every mod that carries this file.
